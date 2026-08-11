@@ -2484,6 +2484,26 @@ class APIServerAdapter(BasePlatformAdapter):
         persisted = self._runtime_request_from_persisted_session_lock(session, body)
         return persisted or runtime_request
 
+    def _persisted_session_model_for_execution(
+        self,
+        session: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Return a session row's explicit executable model selection.
+
+        Older API clients created rows without choosing a model, while the
+        server persisted its advertised virtual model name in those rows.
+        That name is an API routing alias, not a provider model.  Treat it as
+        the absence of a row-level selection so runtime configuration wins.
+        Confirmed Browser locks are resolved separately before this helper is
+        used and therefore keep their existing precedence.
+        """
+        if not isinstance(session, dict):
+            return None
+        stored_model = self._clean_runtime_id(session.get("model"))
+        if not stored_model or stored_model == self._model_name:
+            return None
+        return stored_model
+
     @classmethod
     def _sanitize_runtime_metadata(
         cls,
@@ -3507,7 +3527,6 @@ class APIServerAdapter(BasePlatformAdapter):
         if len(session_id) > self._MAX_SESSION_HEADER_LEN:
             return web.json_response(_openai_error("Session ID too long", code="invalid_session_id"), status=400)
 
-        model = body.get("model") or self._model_name
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
@@ -3517,7 +3536,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if lock_error is not None:
             return lock_error
         requested = runtime_request.get("requested") or {}
-        model_name = self._clean_runtime_id(requested.get("model")) or (str(model) if model else None)
+        # An omitted model means "use the configured gateway runtime".  Do
+        # not persist the adapter's advertised virtual alias as if it were an
+        # executable provider model.
+        model_name = self._clean_runtime_id(requested.get("model")) or None
         model_config = None
         if requested.get("model") or requested.get("provider"):
             model_config = {
@@ -3815,7 +3837,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if runtime_request.get("model_options"):
                 agent_overrides["model_options"] = runtime_request["model_options"]
         else:
-            stored_model = session.get("model") if isinstance(session, dict) else None
+            stored_model = self._persisted_session_model_for_execution(session)
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None
@@ -3925,7 +3947,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if runtime_request.get("model_options"):
                 agent_overrides["model_options"] = runtime_request["model_options"]
         else:
-            stored_model = session.get("model") if isinstance(session, dict) else None
+            stored_model = self._persisted_session_model_for_execution(session)
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None

@@ -263,6 +263,141 @@ async def test_session_chat_resolves_stored_model_route_alias(session_db, monkey
     assert kwargs["session_model"] is None
 
 
+@pytest.mark.asyncio
+async def test_session_without_model_uses_configured_gateway_runtime(session_db, monkeypatch):
+    """Mobile-style session creation must not turn the API alias into a model pin."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = session_db
+    captured = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.session_id = kwargs["session_id"]
+            self.provider = kwargs.get("provider") or ""
+            self.model = kwargs.get("model") or ""
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            captured["history"] = conversation_history
+            return {"final_response": "configured", "session_id": self.session_id}
+
+    _patch_api_server_runtime(monkeypatch)
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        created = await cli.post("/api/sessions", json={"id": "mobile-default"})
+        assert created.status == 201, await created.text()
+        response = await cli.post(
+            "/api/sessions/mobile-default/chat",
+            json={"message": "hello"},
+        )
+        assert response.status == 200, await response.text()
+
+    assert session_db.get_session("mobile-default")["model"] is None
+    assert captured["provider"] == "openrouter"
+    assert captured["model"] == "global/model"
+
+
+@pytest.mark.asyncio
+async def test_legacy_virtual_alias_session_keeps_history_and_uses_configured_runtime(
+    session_db,
+    monkeypatch,
+):
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = session_db
+    session_id = session_db.create_session(
+        "legacy-mobile",
+        "api_server",
+        model=adapter._model_name,
+    )
+    session_db.replace_messages(
+        session_id,
+        [
+            {"role": "user", "content": "remember this"},
+            {"role": "assistant", "content": "remembered"},
+        ],
+    )
+    captured = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.session_id = kwargs["session_id"]
+            self.provider = kwargs.get("provider") or ""
+            self.model = kwargs.get("model") or ""
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            captured["history"] = conversation_history
+            return {"final_response": "configured", "session_id": self.session_id}
+
+    _patch_api_server_runtime(monkeypatch)
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            f"/api/sessions/{session_id}/chat",
+            json={"message": "continue"},
+        )
+        assert response.status == 200, await response.text()
+
+    assert captured["model"] == "global/model"
+    assert [message["content"] for message in captured["history"]] == [
+        "remember this",
+        "remembered",
+    ]
+    assert session_db.get_session(session_id)["model"] == adapter._model_name
+
+
+@pytest.mark.asyncio
+async def test_explicit_real_session_model_still_precedes_configured_runtime(
+    session_db,
+    monkeypatch,
+):
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = session_db
+    captured = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.session_id = kwargs["session_id"]
+            self.provider = kwargs.get("provider") or ""
+            self.model = kwargs.get("model") or ""
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            return {"final_response": "explicit", "session_id": self.session_id}
+
+    _patch_api_server_runtime(monkeypatch)
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        created = await cli.post(
+            "/api/sessions",
+            json={"id": "explicit-model", "model": "openai/gpt-explicit"},
+        )
+        assert created.status == 201, await created.text()
+        response = await cli.post(
+            "/api/sessions/explicit-model/chat",
+            json={"message": "hello"},
+        )
+        assert response.status == 200, await response.text()
+
+    assert session_db.get_session("explicit-model")["model"] == "openai/gpt-explicit"
+    assert captured["model"] == "openai/gpt-explicit"
+
+
 def _register_session_model_route(app, adapter):
     app.router.add_post("/api/sessions/{session_id}/model", adapter._handle_session_model_lock)
 
