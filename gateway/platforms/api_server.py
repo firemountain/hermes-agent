@@ -2968,6 +2968,15 @@ class APIServerAdapter(BasePlatformAdapter):
         except (AttributeError, IndexError, TypeError):
             return ""
 
+    @staticmethod
+    def _direct_completion_text(result: Any) -> str:
+        try:
+            choice = result.choices[0]
+            message = getattr(choice, "message", None)
+            return str(getattr(message, "content", None) or getattr(choice, "text", None) or "")
+        except (AttributeError, IndexError, TypeError):
+            return ""
+
     async def _handle_direct_conversation_stream(self, request: "web.Request") -> "web.StreamResponse":
         auth_err = self._check_auth(request)
         if auth_err: return auth_err
@@ -2992,10 +3001,25 @@ class APIServerAdapter(BasePlatformAdapter):
                 from agent.auxiliary_client import _read_main_model, _read_main_provider, call_llm
                 stream = call_llm(provider=_read_main_provider(), model=_read_main_model(), messages=messages,
                     tools=None, timeout=self._direct_conversation_timeout, stream=True)
-                for chunk in stream:
-                    if cancelled.is_set(): break
-                    delta = self._direct_delta(chunk)
-                    if delta: loop.call_soon_threadsafe(queue.put_nowait, ("delta", delta))
+                try:
+                    chunks = iter(stream)
+                except TypeError:
+                    chunks = None
+                emitted = False
+                if chunks is None:
+                    delta = self._direct_completion_text(stream)
+                    if delta and not cancelled.is_set():
+                        emitted = True
+                        loop.call_soon_threadsafe(queue.put_nowait, ("delta", delta))
+                else:
+                    for chunk in chunks:
+                        if cancelled.is_set(): break
+                        delta = self._direct_delta(chunk)
+                        if delta:
+                            emitted = True
+                            loop.call_soon_threadsafe(queue.put_nowait, ("delta", delta))
+                if not emitted and not cancelled.is_set():
+                    raise RuntimeError("provider returned no direct-conversation content")
                 loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
             except BaseException as exc:
                 loop.call_soon_threadsafe(queue.put_nowait, ("error", type(exc).__name__))

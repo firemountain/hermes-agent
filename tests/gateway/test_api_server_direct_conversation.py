@@ -42,6 +42,38 @@ def test_direct_conversation_is_one_tool_free_provider_stream(monkeypatch):
     assert calls[0]["stream"] is True
 
 
+def test_direct_conversation_accepts_one_shot_completion_from_stream_request(monkeypatch):
+    calls = []
+
+    def fake_call(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="one-shot"))])
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call)
+    monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: "configured-provider")
+    monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "configured-model")
+
+    async def scenario():
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={
+            "key": "a-secure-api-server-key-123456789", "direct_conversation": True,
+        }))
+        app = web.Application()
+        app.router.add_post("/api/direct-conversation/stream", adapter._handle_direct_conversation_stream)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/api/direct-conversation/stream", headers={
+                "Authorization": "Bearer a-secure-api-server-key-123456789",
+            }, json={"instructions": "Stable voice", "message": "Hi", "history": []})
+            assert response.status == 200
+            text = await response.text()
+            assert 'event: delta' in text and '"text": "one-shot"' in text
+            assert 'event: done' in text and 'event: error' not in text
+
+    asyncio.run(scenario())
+    assert len(calls) == 1
+    assert calls[0]["tools"] is None
+    assert calls[0]["stream"] is True
+
+
 def test_direct_history_is_bounded_alternating_and_route_is_config_gated():
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"direct_conversation": False}))
     assert ("POST", "/api/direct-conversation/stream", adapter._handle_direct_conversation_stream) in adapter._http_route_table()
