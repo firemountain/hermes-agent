@@ -706,6 +706,9 @@ class TestPromptBuilderConstants:
         assert "safe standard Markdown" in hint
         assert all(word in hint.lower() for word in ("headings", "lists", "links", "code fences"))
         assert "never emit raw HTML or active content" in hint
+        assert "`## 1. Background and origins`" in hint
+        assert "do not merely write title-looking lines as plain body text" in hint
+        assert all(kind in hint for kind in ("stories", "terse answers", "ordinary conversational prose"))
         assert "No markdown formatting" not in hint
 
     def test_markdown_converting_platform_hints_do_not_forbid_markdown(self):
@@ -995,4 +998,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
