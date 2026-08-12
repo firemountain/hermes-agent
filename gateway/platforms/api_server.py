@@ -3972,6 +3972,37 @@ class APIServerAdapter(BasePlatformAdapter):
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
         seq = 0
+        structured_references: Dict[str, Dict[str, Any]] = {}
+
+        def _capture_structured_references(
+            _tool_call_id: str, _function_name: str, _function_args: Any, function_result: Any
+        ) -> None:
+            """Collect bounded presentation metadata from structured tool results.
+
+            Tools opt in by returning JSON with a top-level ``references`` array.
+            The opaque targets are never interpreted here; the consumer remains
+            responsible for authorizing them before preview.
+            """
+            try:
+                payload = json.loads(function_result) if isinstance(function_result, str) else function_result
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return
+            refs = payload.get("references") if isinstance(payload, dict) else None
+            if not isinstance(refs, list):
+                return
+            for reference in refs[:20]:
+                if not isinstance(reference, dict):
+                    continue
+                reference_id = reference.get("id")
+                target = reference.get("target")
+                if (
+                    isinstance(reference_id, str)
+                    and 0 < len(reference_id) <= 128
+                    and isinstance(target, dict)
+                    and isinstance(target.get("handle"), str)
+                    and 0 < len(target["handle"]) <= 1000
+                ):
+                    structured_references.setdefault(reference_id, reference)
 
         def _event_payload(name: str, payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
             nonlocal seq
@@ -4022,6 +4053,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
+                    tool_complete_callback=_capture_structured_references,
                     gateway_session_key=gateway_session_key,
                     route=route,
                     session_model=session_model,
@@ -4032,6 +4064,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
+                references = list(structured_references.values())[:20]
+                if references and final_response:
+                    db = self._ensure_session_db()
+                    if db is not None:
+                        await asyncio.to_thread(
+                            db.set_latest_matching_message_display_kind,
+                            effective_session_id,
+                            role="assistant",
+                            content=final_response,
+                            display_kind="text",
+                            display_metadata={"references": references},
+                        )
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
                 effective_runtime = {}
                 if isinstance(result, dict):
@@ -4058,6 +4102,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "partial": False,
                     "interrupted": False,
                     "runtime": effective_runtime,
+                    **({"references": references} if references else {}),
                 }))
                 await queue.put(_event_payload("run.completed", {
                     "session_id": effective_session_id,

@@ -5517,6 +5517,23 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload["result"] = json.loads(result)
     except Exception:
         payload["result"] = result
+    if session is not None and isinstance(payload["result"], dict):
+        references = payload["result"].get("references")
+        if isinstance(references, list):
+            collected = session.setdefault("structured_references", {})
+            for reference in references[:20]:
+                if not isinstance(reference, dict):
+                    continue
+                reference_id = reference.get("id")
+                target = reference.get("target")
+                if (
+                    isinstance(reference_id, str)
+                    and 0 < len(reference_id) <= 128
+                    and isinstance(target, dict)
+                    and isinstance(target.get("handle"), str)
+                    and 0 < len(target["handle"]) <= 1000
+                ):
+                    collected.setdefault(reference_id, reference)
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
@@ -9998,6 +10015,9 @@ def _run_prompt_submit(
                     _build_persist_user_message(prompt, images, run_message) if images else prompt
                 ),
             }
+            # References are scoped to this turn. A failed/interrupted prior
+            # turn must never lend its authority to the next assistant reply.
+            session.pop("structured_references", None)
             # Type a synthesized turn at turn START so the crash persist writes
             # its row as a timeline event, instead of leaving a raw user bubble
             # until the turn ends — and forever if it never does, which is
@@ -10194,6 +10214,19 @@ def _run_prompt_submit(
                 status = "complete"
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            references = list(session.pop("structured_references", {}).values())[:20]
+            if references and status == "complete":
+                payload["references"] = references
+                session_db = getattr(agent, "_session_db", None)
+                effective_session_id = getattr(agent, "session_id", None)
+                if session_db is not None and effective_session_id and raw:
+                    session_db.set_latest_matching_message_display_kind(
+                        effective_session_id,
+                        role="assistant",
+                        content=raw,
+                        display_kind="text",
+                        display_metadata={"references": references},
+                    )
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:

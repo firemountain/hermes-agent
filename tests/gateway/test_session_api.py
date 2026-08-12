@@ -1,5 +1,6 @@
 """Focused tests for API server session-control endpoints."""
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -226,6 +227,34 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
     assert all(m.get("role") in ("assistant", "tool") for m in messages)
     # The tool call is preserved alongside the intermediate text.
     assert any(m.get("tool_calls") for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_structured_tool_references_are_emitted_and_persisted(adapter, session_db):
+    session_id = session_db.create_session("reference-session", "api_server")
+    reference = {
+        "id": "ref-stable-1", "kind": "source-passage", "label": "The Inner Sky",
+        "description": "By Steven Forrest", "locator": {"type": "page", "value": 42},
+        "target": {"handle": "ref1.opaque.payload"},
+    }
+
+    async def fake_run(**kwargs):
+        kwargs["tool_complete_callback"](
+            "call-foundry", "foundry_search", {"query": "ascendant"},
+            json.dumps({"ok": True, "references": [reference]}),
+        )
+        session_db.append_message(session_id, "assistant", "Grounded answer.")
+        return {"final_response": "Grounded answer.", "session_id": session_id, "messages": []}, {}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "Use Foundry"})
+            body = await response.text()
+    assert response.status == 200
+    assert '"references": [{"id": "ref-stable-1"' in body
+    messages = session_db.get_messages(session_id)
+    assert messages[-1]["display_metadata"] == {"references": [reference]}
 
 
 # ---------------------------------------------------------------------------
