@@ -983,6 +983,30 @@ class TestChatCompletionsEndpoint:
             data = await resp.json()
             assert "messages" in data["error"]["message"]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("result", "reason"),
+        [
+            ({"final_response": "restart text", "completed": False, "interrupted": True,
+              "turn_exit_reason": "interrupted_during_api_call"}, "runtime_interrupted"),
+            ({"final_response": "", "completed": False}, "no_completion"),
+        ],
+    )
+    async def test_incomplete_turn_is_machine_readable_non_success(self, adapter, result, reason):
+        async def run_agent(**_kwargs):
+            return result, {"input_tokens": 1, "output_tokens": 0, "total_tokens": 1}
+
+        with patch.object(adapter, "_run_agent", side_effect=run_agent):
+            async with TestClient(TestServer(_create_app(adapter))) as cli:
+                response = await cli.post(
+                    "/v1/chat/completions",
+                    json={"messages": [{"role": "user", "content": "compile"}]},
+                )
+                assert response.status == 503
+                body = await response.json()
+        assert body["error"]["code"] == reason
+        assert body["error"]["hermes"] == {"completed": False, "reason": reason}
+
 
     @pytest.mark.asyncio
     async def test_chat_completions_stream_passes_request_model_provider_options(self, adapter):
@@ -2865,4 +2889,3 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
-

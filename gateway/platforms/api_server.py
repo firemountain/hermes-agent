@@ -4484,6 +4484,8 @@ class APIServerAdapter(BasePlatformAdapter):
         completed = bool(result.get("completed", True))
         raw_err_msg = result.get("error")
         err_msg = _redact_api_error_text(raw_err_msg) if raw_err_msg else raw_err_msg
+        turn_exit_reason = str(result.get("turn_exit_reason") or "")
+        interrupted = bool(result.get("interrupted"))
 
         # Decide finish_reason. OpenAI uses "length" for truncation, "stop"
         # for normal completion, and downstream SDKs accept "error" / custom
@@ -4500,6 +4502,24 @@ class APIServerAdapter(BasePlatformAdapter):
         }
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+
+        runtime_error_code = None
+        if interrupted or turn_exit_reason == "interrupted_during_api_call":
+            runtime_error_code = "runtime_interrupted"
+        elif not final_response and not completed and not (is_failed or is_partial):
+            runtime_error_code = "no_completion"
+        if runtime_error_code:
+            err_body = _openai_error(
+                "Agent runtime did not complete the request.",
+                err_type="server_error",
+                code=runtime_error_code,
+            )
+            err_body["error"]["hermes"] = {
+                "completed": False,
+                "reason": runtime_error_code,
+            }
+            response_headers["X-Hermes-Completed"] = "false"
+            return web.json_response(err_body, status=503, headers=response_headers)
 
         # Hard-fail path: no usable assistant text AND a real failure → 5xx
         # with OpenAI-style error envelope so SDK clients raise instead of
