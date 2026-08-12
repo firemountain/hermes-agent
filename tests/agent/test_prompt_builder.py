@@ -701,6 +701,13 @@ class TestPromptBuilderConstants:
         # Fallback guidance: plain file path in the response text.
         assert "plain" in hint.lower()
 
+    def test_api_server_hint_preserves_safe_standard_markdown_contract(self):
+        hint = PLATFORM_HINTS["api_server"]
+        assert "safe standard Markdown" in hint
+        assert all(word in hint.lower() for word in ("headings", "lists", "links", "code fences"))
+        assert "never emit raw HTML or active content" in hint
+        assert "No markdown formatting" not in hint
+
     def test_markdown_converting_platform_hints_do_not_forbid_markdown(self):
         """#12224 — WhatsApp (Baileys) and Signal adapters actively convert
         markdown to native formatting (gateway/platforms/whatsapp_common.py
@@ -988,5 +995,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

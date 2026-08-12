@@ -1004,10 +1004,10 @@ PLATFORM_HINTS = {
         "— when a sticker is the right response, use yb_send_sticker."
     ),
     "api_server": (
-        "You're responding through an API server. The rendering layer is unknown — "
-        "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
-        "code fences). Treat this like a conversation, not a document. Keep responses "
-        "brief and natural. "
+        "You're responding through an API server whose client can render safe standard "
+        "Markdown. Use Markdown when it improves hierarchy or clarity (including headings, "
+        "lists, emphasis, links, and code fences), and never emit raw HTML or active content. "
+        "Treat this like a conversation, not a document. Keep responses brief and natural. "
         "File/media delivery: images referenced as MEDIA:/absolute/path tags "
         "(.png/.jpg/.jpeg/.gif/.webp/.bmp, up to 5MB) are inlined as base64 data "
         "URLs in responses on the chat, completions, and responses endpoints. "
